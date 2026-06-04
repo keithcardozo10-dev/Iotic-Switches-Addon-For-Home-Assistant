@@ -1,10 +1,25 @@
-"""Switch platform for Iotics — on/off switches including fan toggles.
+"""
+Switch platform for Iotics — real-time on/off toggles via coordinator entity.
 
-Creates SwitchEntity instances linked to Iotics devices in the device
-registry. State is read from the coordinator's entity_state map (updated
-by MQTT messages). Commands are forwarded to physical devices via LAN HTTP.
-Fan toggles use a different unique_id naming (suffixed "_fan") to avoid
-collision with number platform fan speed entities.
+Entity naming convention:
+  - Regular buttons (b1-b7): switch.iotics_{room_slug}_{label_slug}
+    Example: switch.iotics_kitchen_light
+  - Fan toggles (f1): switch.iotics_{room_slug}_fan
+    Example: switch.iotics_kitchen_fan
+  - Fan speed (l1): SKIPPED here — handled by number.py
+
+State management:
+  - is_on reads from coordinator.entity_state (updated by MQTT handler)
+  - async_turn_on/off sends HTTP command to device LAN IP, then updates state
+  - CoordinatorEntity ensures state refresh on coordinator data updates
+
+Device communication:
+  - HTTP GET to http://<device_ip>/action?button=<btn>&status=<0|1>
+  - Same endpoint the Iotics mobile app uses on LAN
+
+Important:
+  - entity_id is set explicitly to match coordinator entity_state keys
+  - entities_by_id registration enables direct async_write_ha_state from MQTT handler
 """
 
 from __future__ import annotations
@@ -15,7 +30,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_ON
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo, Entity
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -38,9 +53,10 @@ async def async_setup_entry(
     entities = []
     for b in buttons:
         room_slug = slugify(b["device_name"])
-        
+
         if b["is_fan"]:
-            # Fan toggle — use "_fan" suffix to avoid collision with number entity "_fan_speed"
+            if b["btn"] == "l1":
+                continue  # speed control, not a switch
             unique_id = f"iotics_{room_slug}_fan"
             name = f"{b['device_name']} Fan"
         else:
@@ -48,25 +64,27 @@ async def async_setup_entry(
             unique_id = f"iotics_{room_slug}_{label_slug}"
             name = b["label"]
 
-        entities.append(
-            IoticsSwitch(
-                coordinator=coordinator,
-                entity_id_str=f"switch.{unique_id}",
-                name=name,
-                device_name=b["device_name"],
-                token=b["token"],
-                btn=b["btn"],
-                ip=b["ip"],
-                unique_id=unique_id,
-                is_fan=b["is_fan"],
-            )
+        entity = IoticsSwitch(
+            coordinator=coordinator,
+            entity_id_str=f"switch.{unique_id}",
+            name=name,
+            device_name=b["device_name"],
+            token=b["token"],
+            btn=b["btn"],
+            ip=b["ip"],
+            unique_id=unique_id,
+            is_fan=b["is_fan"],
         )
+        entities.append(entity)
+
+        # Store entity reference for direct state writes
+        coordinator.entities_by_id[entity.entity_id] = entity
 
     async_add_entities(entities)
 
 
-class IoticsSwitch(SwitchEntity):
-    """An Iotics switch/light/plug that shows under Devices & Services."""
+class IoticsSwitch(CoordinatorEntity, SwitchEntity):
+    """Iotics switch/plug/light with real-time state."""
 
     def __init__(
         self,
@@ -80,7 +98,7 @@ class IoticsSwitch(SwitchEntity):
         unique_id: str,
         is_fan: bool = False,
     ) -> None:
-        super().__init__()
+        super().__init__(coordinator)
         self._coordinator = coordinator
         self._attr_name = name
         self._attr_unique_id = unique_id
@@ -91,7 +109,6 @@ class IoticsSwitch(SwitchEntity):
         self.entity_id = entity_id_str
         self._is_fan = is_fan
 
-        # Link to device registry so it appears under a device
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, token)},
             name=device_name,
@@ -101,7 +118,7 @@ class IoticsSwitch(SwitchEntity):
 
     @property
     def is_on(self) -> bool | None:
-        """Return current state from the coordinator's MQTT-updated map."""
+        """Return current state from coordinator's entity_state."""
         state = self._coordinator.entity_state.get(self._entity_id_str, "off")
         return state == STATE_ON
 
@@ -112,6 +129,8 @@ class IoticsSwitch(SwitchEntity):
             await self._send_command("1")
         self._coordinator.entity_state[self._entity_id_str] = "on"
         self.async_write_ha_state()
+        # Record for MQTT token learning
+        self._coordinator._last_toggled = {"eid": self._entity_id_str, "time": __import__("time").time()}
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the switch off."""
@@ -120,6 +139,8 @@ class IoticsSwitch(SwitchEntity):
             await self._send_command("0")
         self._coordinator.entity_state[self._entity_id_str] = "off"
         self.async_write_ha_state()
+        # Record for MQTT token learning
+        self._coordinator._last_toggled = {"eid": self._entity_id_str, "time": __import__("time").time()}
 
     async def _send_command(self, status: str) -> None:
         """Send HTTP command to the physical Iotics device."""

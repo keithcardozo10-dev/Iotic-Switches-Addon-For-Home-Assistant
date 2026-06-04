@@ -30,7 +30,13 @@ This is a **one-shot operation at startup only**. After that, state updates are 
 
 Originally the integration pushed states via the supervisor socket on every MQTT update. This caused a race condition: if a user toggled a switch in the HA UI, the MQTT message from the physical switch (which arrives after the hardware responds) would revert the state back by overwriting the user's action.
 
-The fix: MQTT messages only update the in-memory `entity_state` dict and call `coordinator.async_update_listeners()`. Each entity then reads its state from the dict and calls `async_write_ha_state()` itself.
+The current approach: MQTT messages update the in-memory `entity_state` dict and directly call `async_write_ha_state()` on the target entity via `hass.loop.call_soon_threadsafe(coordinator.entities_by_id[eid].async_write_ha_state)`. This avoids the race condition by only updating the specific entity affected by the MQTT message, not the entire state map.
+
+**CRITICAL:** Each entity platform (switch.py, number.py) MUST register its entities in `coordinator.entities_by_id`:
+```python
+coordinator.entities_by_id[entity.entity_id] = entity
+```
+Without this registration, MQTT updates update `entity_state` but never trigger `async_write_ha_state()` on the entity — the dashboard never re-reads the new state. This was the root cause of "fan speed slider doesn't move when physically changed" (fixed June 2026).
 
 ### Coordinator Init Order
 
@@ -75,9 +81,10 @@ HA starts → async_setup_entry() called
 
 MQTT message arrives → on_mqtt_message()
   ├─ Extract token + btn from topic
-  ├─ O(1) lookup → find entity_id
+  ├─ O(1) mqtt_lookup → find entity_id
+  ├─ new_state: l1=raw value, switches=on/off conversion
   ├─ Update entity_state dict
-  └─ coordinator.async_update_listeners()
+  └─ call_soon_threadsafe(entity.async_write_ha_state)
 
 User toggles switch → IoticsSwitch.async_turn_on/off()
   ├─ Send HTTP command to device IP

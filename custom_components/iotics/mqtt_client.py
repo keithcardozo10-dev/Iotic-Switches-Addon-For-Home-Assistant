@@ -1,12 +1,36 @@
 """MQTT client for Iotics -- connects to AWS IoT via WSS 443 with SigV4.
 
 Exact replica of the Mac realtime server's MQTT approach:
-- paho-mqtt with transport="websockets"
-- SigV4-signed path via aws_iot_wss_path()
+- paho-mqtt v2 with transport="websockets"
+- SigV4-signed path via aws_iot_wss_path() (regenerated per connection)
 - Sec-WebSocket-Protocol: mqtt header (required by AWS IoT)
-- Watchdog with reconnect on connection loss or 120s silence
+- Watchdog: checks every 15s, reconnects on connection loss or 120s silence
 
-DEBUG VERSION -- verbose logging
+Key design decisions:
+  - websockets transport (NOT tcp) -- AWS IoT requires WSS on port 443
+  - ssl._create_unverified_context() needed inside HA container (no AWS root CA)
+  - io/+/# subscription catches all depths; handler filters for /hw suffix
+  - The connect() method runs as an asyncio task with automatic retry loop
+
+Message flow:
+  Iotics device -> AWS IoT MQTT -> paho on_message callback -> _on_mqtt_message()
+  The callback runs in paho network thread; uses call_soon_threadsafe for HA writes
+
+Subscription pattern (io/+/# matches):
+  io/{token}/b1/hw          (4-part -- switch state updates)
+  io/{token}/l1/is_bldc/hw  (5-part -- BLDC fan speed)
+  io/{token}/network        (2-part -- WiFi info, filtered by handler)
+
+Watchdog system:
+  1. Every 15s, checks if connected or if 120s elapsed since last message
+  2. On failure: loop_stop() + disconnect() + 5s delay + reconnect
+  3. Exponential backoff is NOT used -- fixed 5s delay is sufficient
+
+IMPORTANT -- Known limitations:
+  - loop_start() alone can disconnect the internal state machine.
+    The watchdog reconnection loop handles this.
+  - The client keeps reconnecting as long as self._running is True.
+    Set _running=False or call disconnect() to stop.
 """
 
 from __future__ import annotations

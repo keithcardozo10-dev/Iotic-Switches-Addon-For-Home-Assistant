@@ -53,9 +53,28 @@ User drags slider to 3 in HA
     → async_write_ha_state()
 
 Physical fan responds
-  → MQTT message: io/{token}/{btn}/hw = "3"
-    → MQTT handler updates entity_state
-    → coordinator.async_update_listeners()
-      → NumberEntity reads new state
-      → async_write_ha_state() confirms
+  -> MQTT message: io/{token}/{btn}/hw = "3"
+    -> MQTT handler validates: btn=="l1" -> new_state=val (raw value, NOT "on"/"off")
+    -> O(1) mqtt_lookup -> find eid
+    -> Update entity_state[eid] = "3"
+    -> call_soon_threadsafe(entity.async_write_ha_state) -- via entities_by_id
+
+## Critical: Entities by ID Registration
+
+**Without this, MQTT updates are invisible to the dashboard.**
+
+The MQTT handler checks `if eid in coordinator.entities_by_id` before calling
+`async_write_ha_state()`. If number.py never registers its entities there,
+the entity_state is updated but the entity's `native_value` is never re-read
+by HA -- the slider appears frozen.
+
+```python
+# In async_setup_entry:
+entity = IoticsNumber(...)
+coordinator.entities_by_id[entity.entity_id] = entity  # <-- REQUIRED
+entities.append(entity)
 ```
+
+This was the root cause of "fan speed slider doesn't move when physically
+changed" (June 2026 fix). switch.py already had the registration line,
+but number.py was missing it.

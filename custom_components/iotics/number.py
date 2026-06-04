@@ -1,7 +1,24 @@
-"""Number platform for Iotics — fan speed controls (0-4).
+"""
+Number platform for Iotics — fan speed controls (0-4).
 
-Creates NumberEntity instances linked to Iotics devices. State is read
-from the coordinator's entity_state map. Commands sent via MQTT publish.
+Creates NumberEntity instances for l1 (fan speed) buttons only.
+State is read from the coordinator's entity_state map (updated by 
+MQTT handler in real-time). Commands sent via MQTT publish.
+
+Key design:
+  - Only l1 buttons create number entities (f1 = on/off, handled by switch.py)
+  - native_value reads from coordinator.entity_state for real-time sync
+  - async_set_native_value publishes MQTT to io/{token}/{btn}/sw topic
+  - entities_by_id registration enables direct async_write_ha_state from MQTT handler
+  - The CoordinatorEntity superclass links to DataUpdateCoordinator for cloud sync
+
+Important (June 4-11, 2026 fixes):
+  - CRITICAL: coordinator.entities_by_id MUST be populated (was missing, causing
+    fan speed slider to never update on physical change)
+  - l1 payloads "0"-"4" stay as raw strings (not converted to "on"/"off")
+  - The slugify function produces underscores (hall_1_1), not hyphens (hall-1-1)
+  - native_value returns float(coordinator.entity_state.get(self.entity_id, "0"))
+    or 0.0 on ValueError (e.g. if garbage data somehow stored)
 """
 
 from __future__ import annotations
@@ -32,16 +49,16 @@ async def async_setup_entry(
     devices = coordinator.data
 
     buttons = IoticsApiClient.extract_buttons(devices)
-    fans = [b for b in buttons if b["is_fan"]]
+    fans = [b for b in buttons if b["btn"] == "l1"]  # Only l1 is fan speed control
 
     entities = []
+    coordinator = hass.data[DOMAIN][COORDINATOR]
     for b in fans:
         room_slug = slugify(b["device_name"])
         label_slug = slugify(b["label"])
         entity_id = f"number.iotics_{room_slug}_{label_slug}"
 
-        entities.append(
-            IoticsNumber(
+        entity = IoticsNumber(
                 coordinator=coordinator,
                 mqtt_client=mqtt_client,
                 entity_id=entity_id,
@@ -52,7 +69,8 @@ async def async_setup_entry(
                 ip=b["ip"],
                 unique_id=f"iotics_{room_slug}_{label_slug}",
             )
-        )
+        coordinator.entities_by_id[entity.entity_id] = entity
+        entities.append(entity)
 
     async_add_entities(entities)
 
