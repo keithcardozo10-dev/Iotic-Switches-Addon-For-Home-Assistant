@@ -264,4 +264,18 @@ class IoticsApiClient:
                     "status": str(sw.get("status", 0)), "is_fan": is_fan,
                     "ip": ip, "device_name": hwname,
                 })
+
+        # Deduplicate labels per device — if two buttons in the same device
+        # share the same slugified label, append (b1), (b2) to disambiguate.
+        # e.g. Router has b1="Light" and b2="Light".
+        label_counts: dict[str, int] = {}
+        for item in items:
+            key = f"{item['token']}_{slugify(item['label'])}"
+            label_counts[key] = label_counts.get(key, 0) + 1
+
+        for item in items:
+            key = f"{item['token']}_{slugify(item['label'])}"
+            if label_counts.get(key, 0) > 1:
+                item["label"] = f"{item['label']} ({item['btn']})"
+
         return items
