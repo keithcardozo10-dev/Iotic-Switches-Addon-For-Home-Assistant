@@ -1,6 +1,7 @@
 # Iotics Switches Addon for Home Assistant
 
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/keithcardozo10-dev/Iotics-Switches-Addon-For-Home-Assistant)](https://github.com/keithcardozo10-dev/Iotics-Switches-Addon-For-Home-Assistant/releases)
+[![GitHub all releases](https://img.shields.io/github/downloads/keithcardozo10-dev/Iotics-Switches-Addon-For-Home-Assistant/total)](https://github.com/keithcardozo10-dev/Iotics-Switches-Addon-For-Home-Assistant/releases)
 
 A **Home Assistant Custom Integration** (custom_component) that connects [Iotics](https://www.iotics.io) smart home WiFi switches directly into HA. Automatic device discovery, real-time state sync via MQTT, and full dashboard control — no cloud polling, no bridge containers, no YAML packages.
 
